@@ -53,7 +53,7 @@ def scrape_media(tweet_id: int) -> list[dict]:
     r = requests.get(f'https://api.vxtwitter.com/Twitter/status/{tweet_id}')
     r.raise_for_status()
     try:
-        return r.json()['media_extended']
+        return r.json()
     except requests.exceptions.JSONDecodeError: # the api likely returned an HTML page, try looking for an error message
         # <meta content="{message}" property="og:description" />
         if match := re.search(r'<meta content="(.*?)" property="og:description" />', r.text):
@@ -63,11 +63,16 @@ def scrape_media(tweet_id: int) -> list[dict]:
 
 def reply_media(update: Update, context: CallbackContext, tweet_media: list) -> bool:
     """Reply to message with supported media."""
+
+    tweet_url = str(tweet_media["tweetURL"])
+    tweet_author = str(tweet_media["user_screen_name"])
+
+    tweet_media = tweet_media['media_extended']
     photos = [media for media in tweet_media if media["type"] == "image"]
     gifs = [media for media in tweet_media if media["type"] == "gif"]
     videos = [media for media in tweet_media if media["type"] == "video"]
     if photos:
-        reply_photos(update, context, photos)
+        reply_photos(update, context, photos, tweet_url, tweet_author)
     if gifs:
         reply_gifs(update, context, gifs)
     elif videos:
@@ -75,7 +80,7 @@ def reply_media(update: Update, context: CallbackContext, tweet_media: list) -> 
     return bool(photos or gifs or videos)
 
 
-def reply_photos(update: Update, context: CallbackContext, twitter_photos: list[dict]) -> None:
+def reply_photos(update: Update, context: CallbackContext, twitter_photos: list[dict], tweet_url: str, tweet_author: str) -> None:
     """Reply with photo group."""
     photo_group = []
     for photo in twitter_photos:
@@ -88,10 +93,15 @@ def reply_photos(update: Update, context: CallbackContext, twitter_photos: list[
             new_url = parsed_url._replace(query='format=jpg&name=orig').geturl()
             log_handling(update, 'info', 'New photo url: ' + new_url)
             requests.head(new_url).raise_for_status()
-            photo_group.append(InputMediaDocument(media=new_url))
+            scraped_image = InputMediaDocument(media=new_url)
+            scraped_image = adding_exif_to_image(scraped_image, tweet_url, tweet_author)
+            photo_group.append(scraped_image)
         except requests.HTTPError:
             log_handling(update, 'info', 'orig quality not available, using original url')
-            photo_group.append(InputMediaDocument(media=photo_url))
+            scraped_image = InputMediaDocument(media=photo_url)
+            scraped_image = adding_exif_to_image(scraped_image, tweet_url, tweet_author)
+            photo_group.append(scraped_image)
+
     update.effective_message.reply_media_group(photo_group, quote=True)
     log_handling(update, 'info', f'Sent photo group (len {len(photo_group)})')
     context.bot_data['stats']['media_downloaded'] += len(photo_group)
