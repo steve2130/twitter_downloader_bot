@@ -4,10 +4,12 @@
 
 import os
 import httpx
+import re
+import html
 import asyncio
-import argparse
-import Twitter_Account
+import requests
 from pathlib import Path
+from exif import Image
 from alive_progress import alive_bar
 
 class bcolors:
@@ -40,7 +42,7 @@ async def main():
     Twitter_Post_ID = []
 
     # Text_File_Content = Open_Text_File(args.file_path[0])
-    Text_File_Content = Open_Text_File("C:\\Users\\Steve\\Documents\\GitHub\\Redirect\\src\\t.txt")
+    Text_File_Content = Open_Text_File("C:\\Users\\Steve\\Documents\\GitHub\\twitter_downloader_bot\\old version\\t.txt")
 
     # make the subfolder for the images to be saved in
     # https://gist.github.com/krishh-konar/e584d3fa5e8f215618c53d6f13f669e1
@@ -51,13 +53,19 @@ async def main():
         os.chdir('twitter_images')
 
 
-    for Link in Text_File_Content:
-        Twitter_Post_Link.append(str(Link))
-        Twitter_Post_ID.append(int(Link.split("/")[-1]))
 
-    for tweet in Twitter_Post_ID:
-        photo_url_list, username_list, Tweet_Link = await Twitter_Scraper(tweet)
-        await Download_Images(photo_url_list, username_list, Tweet_Link)
+    Failed_to_reach_tweet_list = []
+
+    for Link in Text_File_Content:
+        try:
+            tweet = int(Link.split("/")[-1])
+
+            processed_url_list, tweet_author, tweet_url = await Twitter_Scraper(tweet)
+            await Download_Images(processed_url_list, tweet_author, tweet_url)
+
+        except:
+            print(f'[!] {Link}')
+            Failed_to_reach_tweet_list.append(Link)
 
 
     # Removing ".jpg_original" file (Created after adding metadata)
@@ -68,6 +76,8 @@ async def main():
     for filename in Path(".").glob("*.png_original"):
         filename.unlink()
 
+    for tweet_failed_url in Failed_to_reach_tweet_list:
+        print(tweet_failed_url)
 
     print(f"{bcolors.OKGREEN}Done!{bcolors.ENDC}")
 
@@ -98,12 +108,7 @@ def Open_Text_File(filename: str) -> list:
 
 
 
-async def Twitter_Scraper(Tweet_ID: str) -> dict:
-
-    media_url = []
-    username_list = []
-    Tweet_Link = []
-
+async def Twitter_Scraper(Tweet_ID: str):
 
     try:
         r = requests.get(f'https://api.vxtwitter.com/Twitter/status/{Tweet_ID}')
@@ -113,14 +118,20 @@ async def Twitter_Scraper(Tweet_ID: str) -> dict:
     except requests.exceptions.JSONDecodeError: # the api likely returned an HTML page, try looking for an error message
         # <meta content="{message}" property="og:description" />
         if match := re.search(r'<meta content="(.*?)" property="og:description" />', r.text):
-            raise APIException(f'API returned error: {html.unescape(match.group(1))}')
-        raise
+            print(f'API returned error: {html.unescape(match.group(1))}')
+        return
 
 
     try:
-        tweet_url = str(res["tweetURL"])
-        tweet_author = str(res["user_screen_name"])
+        tweet_images_list = []
+        tweet_url = str(res["tweetURL"]).replace("'", "")
+        tweet_author = str(res["user_screen_name"]).replace("'", "")
         tweet_media = res['media_extended']
+
+
+        for number_of_media_in_tweet in tweet_media:
+            new_url = number_of_media_in_tweet["url"].replace("'", "")
+            tweet_images_list.append(new_url)
 
     except:
         print(f'{bcolors.FAIL}Error when extracting tweet metadata.{bcolors.ENDC}')
@@ -128,14 +139,15 @@ async def Twitter_Scraper(Tweet_ID: str) -> dict:
     try:
         processed_url_list = []
 
-        for url in tweet_media:
+        for url in tweet_images_list:
             processed_url = Process_Media_url(url)
             processed_url_list.append(processed_url)
 
     except:
+        print(f'{bcolors.FAIL}Error when adding media in a tweet to a list.{bcolors.ENDC}')
 
 
-    try:
+    return processed_url_list, tweet_author, tweet_url
 
 
 
@@ -159,15 +171,16 @@ def Process_Media_url(url: str):
 
 
 
-async def Download_Images(url_list: list, username_list: list, Tweet_Link: list) -> None:
+async def Download_Images(url_list: list, tweet_author: str, tweet_url: str) -> None:
     headers = {
         'Host': 'pbs.twimg.com',
         'method': 'GET',
         'scheme': 'https',
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image,webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-        'accept-encoding': 'gzip, deflate, br',
-        'accept-language': 'en-US,en;q=0.9',
-        'cache-control': 'max-age=0',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/png,image/svg+xml,*/*;q=0.8',
+        'accept-encoding': 'gzip, deflate, br, zstd',
+        'accept-language': 'zh-TW,zh;q=0.8,en-US;q=0.5,en;q=0.3',
+        'cache-control': 'no-cache',
+        'connection': 'keep-alive',
         'sec-ch-ua': '" Not A;Brand";v="99", "Chromium";v="102", "Google Chrome";v="102"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': 'macOS',
@@ -176,13 +189,14 @@ async def Download_Images(url_list: list, username_list: list, Tweet_Link: list)
         'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36'
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0',
+        'TE': 'trailers'
     }
-        
-    NumberOfLinks = len(Tweet_Link)
+
+    NumberOfLinks = len(url_list)
     with alive_bar(NumberOfLinks) as bar:
         # remove the "?format=jpg&name=orig"
-        for url, username, Tweet in zip(url_list, username_list, Tweet_Link):
+        for url in url_list:
             # Making the filename for the image
             try:
                 if "?format" in url:
@@ -198,43 +212,42 @@ async def Download_Images(url_list: list, username_list: list, Tweet_Link: list)
 
             # download images
             try: 
-                client = httpx.AsyncClient(http2=True)
-                response = await client.get(url, headers=headers)
-            
+                # client = httpx.AsyncClient(http2=True)
+                # response = await client.get(url, headers=headers)
+                response = requests.get(url, headers=headers)
             except:
                 print(f"{bcolors.FAIL}Cannot connect to <{url}>{bcolors.ENDC}")
+                return
 
 
             # Saving the image
             try:
                 with open(filename, "wb") as file:
                     file.write(response.content)
-                
-                Editing_Metadata(str(username), str(filename), str(Tweet))
 
                 print(f"{filename}✅", end="\r")  ### For progress bar
                 bar()
                 
             except:
                 print(f"{bcolors.FAIL}Error when saving {filename}{bcolors.ENDC}")
+                return
 
 
 
+            try:
+                with open(filename, 'rb') as image_file:
+                    my_image = Image(image_file)
+                    my_image.artist = "@" + tweet_author
+                    my_image.copyright = tweet_url
 
 
+                with open(filename, 'wb') as file:
+                    file.write(my_image.get_file())
+
+            except:
+                print(f"{bcolors.FAIL}Error when adding metadata for {filename}{bcolors.ENDC}")
 
 
-
-def Editing_Metadata(image_file: obj, tweet_author: str, tweet_url: str, Tweet_ID: str):
-    try:
-        tweet_image = Image(image_file)
-        tweet_image.artist = "@" + tweet_author
-        tweet_image.copyright = tweet_url
-
-        
-
-    except:
-        print(f"{bcolors.FAIL}Error when adding metadata for {Tweet_ID}{bcolors.ENDC}")
 
 
 
